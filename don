@@ -1,0 +1,158 @@
+<script>
+const DATA_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vT1lgAWEGk3qFzUO2Iok3CZrKP7Zu3Gd9gxvUsfR-Y9p4YQm7GXh0wxKWfIEnZZWLYwYKaTIp1E1vDq/pub?gid=1625574187&single=true&output=csv";
+const monthOrder = ["มกราคม","กุมภาพันธ์","มีนาคม","เมษายน","พฤษภาคม","มิถุนายน","กรกฎาคม","สิงหาคม","กันยายน","ตุลาคม","พฤศจิกายน","ธันวาคม"];
+let DATA_ROWS = [];
+let state = { year: "ทั้งหมด", month: "ทั้งหมด", week: "ทั้งหมด" };
+let chartTypeInst = null, chartLeadInst = null;
+
+function parseCsv(text){
+  const records = [];
+  let record = [], field = '', quoted = false;
+  for(let i = 0; i < text.length; i++){
+    const char = text[i];
+    if(quoted){
+      if(char === '"' && text[i + 1] === '"'){ field += '"'; i++; }
+      else if(char === '"'){ quoted = false; }
+      else{ field += char; }
+    }else if(char === '"'){ quoted = true; }
+    else if(char === ','){ record.push(field); field = ''; }
+    else if(char === '\n'){
+      record.push(field.replace(/\r$/, ''));
+      records.push(record);
+      record = [];
+      field = '';
+    }else{ field += char; }
+  }
+  if(field || record.length){
+    record.push(field.replace(/\r$/, ''));
+    records.push(record);
+  }
+  
+  // ลบ spacebar ส่วนเกินที่หัวตาราง
+  const headers = records.shift()?.map(header => header.trim()) || [];
+  console.log("📝 หัวตารางที่อ่านได้จาก CSV:", headers); // ไว้เช็กว่าชื่อคอลัมน์ตรงไหม
+  
+  return records.map(values => Object.fromEntries(headers.map((header, index) => [header, (values[index] || '').trim()])));
+}
+
+function parseSheetDate(value){
+  if (!value) return null;
+  // ปรับให้รองรับวันที่ที่มีวินาทีด้วย เช่น 15/07/2024 10:30:00
+  const match = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if(!match) {
+      console.warn("⚠️ รูปแบบวันที่ไม่ตรง (อ่านค่าไม่ได้):", value);
+      return null;
+  }
+  return new Date(Number(match[3]), Number(match[2]) - 1, Number(match[1]), Number(match[4] || 0), Number(match[5] || 0));
+}
+
+function formatDate(date){
+  if(!date) return '-';
+  const pad = value => String(value).padStart(2, '0');
+  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()}`;
+}
+
+function differenceInDays(start, end){
+  if (!start || !end) return 0;
+  return (end.getTime() - start.getTime()) / 86400000;
+}
+
+function isPassing(value){
+  return value && value.includes('ผ่าน') && !value.includes('ไม่ผ่าน');
+}
+
+function toDashboardRow(row, index){
+  const week = Number(row.Week);
+  const arriveDate = parseSheetDate(row['วันที่ของมาส่ง']);
+  const enteredDate = parseSheetDate(row['วันที่รับเข้าระบบ']);
+  const storedDate = parseSheetDate(row['วันที่จัดเก็บ']);
+  
+  // แจ้งเตือนใน Console ถ้ารายการไหนถูกเตะทิ้ง จะได้รู้สาเหตุ
+  if(!Number.isFinite(week) || !row.Month || !row['Lot/Serial Number'] || !arriveDate || !enteredDate || !storedDate) {
+      console.log(`❌ แถวที่ ${index + 2} ถูกข้าม เพราะข้อมูลไม่ครบ:`, row);
+      return null;
+  }
+  
+  return {
+    year: arriveDate.getFullYear(),
+    week,
+    month: row.Month,
+    lot: row['Lot/Serial Number'],
+    product: row.Product || '-',
+    to: row.To || '-',
+    arrive: formatDate(arriveDate),
+    entered: formatDate(enteredDate),
+    stored: formatDate(storedDate),
+    lt_in: differenceInDays(arriveDate, enteredDate),
+    lt_store: differenceInDays(enteredDate, storedDate),
+    sla: row['วันที่ QA ใช้ตรวจ'] || '-',
+    type: row.Type || 'อื่นๆ',
+    pass_in: isPassing(row['เกณฑ์รับเข้า'] || ''),
+    pass_store: isPassing(row['เกณฑ์จัดเก็บ'] || ''),
+    pass_total: isPassing(row['เกณฑ์รวม'] || '')
+  };
+}
+
+// ... โค้ดส่วนที่เหลือ (ฟังก์ชัน selectLatestPeriod จนถึงบรรทัดก่อน loadData) ยังเหมือนเดิมทุกประการ ...
+// (คุณสามารถก๊อปปี้ส่วนที่เหลือจากของเดิมมาต่อได้เลยครับ หรือด้านล่างผมแนบส่วนที่จำเป็นให้)
+
+function selectLatestPeriod(){
+  if(!DATA_ROWS.length) return;
+  const latestYear = Math.max(...DATA_ROWS.map(row => row.year));
+  const yearRows = DATA_ROWS.filter(row => row.year === latestYear);
+  const latestWeek = Math.max(...yearRows.map(row => row.week));
+  const latestRows = yearRows.filter(row => row.week === latestWeek);
+  state.year = latestYear;
+  state.week = latestWeek;
+  state.month = monthOrder.find(month => latestRows.some(row => row.month === month)) || latestRows[0].month;
+}
+
+function escapeHtml(value){ return String(value).replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' })[char]); }
+function getYearsPresent(){ const set = new Set(DATA_ROWS.map(r => r.year)); return [...set].sort((a,b) => a-b); }
+function getMonthsPresent(year){ const set = new Set(DATA_ROWS.filter(r => year === "ทั้งหมด" || r.year === year).map(r => r.month)); return monthOrder.filter(m => set.has(m)); }
+function getWeeksForMonth(year, month){ const set = new Set(DATA_ROWS.filter(r => (year === "ทั้งหมด" || r.year === year) && (month === "ทั้งหมด" || r.month === month)).map(r => r.week)); return [...set].sort((a,b) => a-b); }
+
+function renderYearFilters(){ /* โค้ดเดิม... */ }
+function renderMonthFilters(){ /* โค้ดเดิม... */ }
+function renderWeekFilters(){ /* โค้ดเดิม... */ }
+function filteredRows(){ /* โค้ดเดิม... */ }
+function pct(n, d){ return d === 0 ? 0 : Math.round((n/d)*1000)/10; }
+
+function update(){
+  const rows = filteredRows();
+  const n = rows.length;
+  document.getElementById('rowCountLabel').textContent = n + ' รายการ';
+  if(n === 0){
+    // ... โค้ดอัปเดต UI ตอนไม่มีข้อมูล (โค้ดเดิม) ...
+  }
+  // ... โค้ดอัปเดตกราฟและตาราง (โค้ดเดิม) ...
+}
+
+async function loadData(){
+  const status = document.getElementById('dataStatus');
+  try{
+    const response = await fetch(DATA_URL, { cache: 'no-store' });
+    if(!response.ok) throw new Error(`HTTP ${response.status}`);
+    const csv = await response.text();
+    
+    const parsedData = parseCsv(csv);
+    DATA_ROWS = parsedData.map((row, idx) => toDashboardRow(row, idx)).filter(Boolean);
+    console.log("✅ ข้อมูลที่ผ่านเงื่อนไขและพร้อมแสดงผล:", DATA_ROWS.length, "รายการ");
+
+    if (DATA_ROWS.length > 0) {
+        selectLatestPeriod();
+        renderYearFilters(); // ถ้าฟังก์ชันเหล่านี้ไม่ได้ถูกเขียนทับ ให้ใส่กลับเข้าไป
+        renderMonthFilters();
+        renderWeekFilters();
+    }
+    update();
+    status.innerHTML = '<span class="dot"></span>โหลดข้อมูลล่าสุดแล้ว';
+  }catch(error){
+    console.error('Unable to load spreadsheet data:', error);
+    document.getElementById('rowCountLabel').textContent = 'โหลดข้อมูลไม่สำเร็จ';
+    document.getElementById('tbody').innerHTML = '<tr><td colspan="14" class="empty-msg">ไม่สามารถโหลดข้อมูลจาก Google Sheets ได้ กรุณาลองใหม่</td></tr>';
+    status.innerHTML = '<span class="dot" style="background:#e34948"></span>โหลดข้อมูลไม่สำเร็จ';
+  }
+}
+loadData();  
+</script>
